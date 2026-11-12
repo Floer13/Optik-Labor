@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 # ==========================================
 # 1. KONFIGURATION & PARAMETER
 # ==========================================
-base_dir = Path(r"C:\Users\timah\Documents\Optik Labor\Bilder")
+# Aktualisierter Pfad zu Ihren 16 Aufnahmen
+base_dir = Path(r"C:\Users\timah\Documents\GitHub\Optik-Labor\Sensorcharaterisierung\Bilder\1.3 16 Aufnahmen")
 
 # Sensor- und Versuchsspezifische Parameter (Sony IMX540 / IDS U3-31R0CP-C-HQ)
 pixel_pitch = 2.74e-6  # Pixelgröße in Metern (2.74 µm)
@@ -15,12 +16,9 @@ wavelength = 630e-9  # Wellenlänge der LED in Metern (630 nm)
 h = 6.62607015e-34  # Planck-Wirkungsquantum
 c = 299792458  # Lichtgeschwindigkeit
 
-# Bestrahlungsstärke E [W/m^2] für jede Belichtungsstufe (bitte an Ihre Messungen anpassen)
-E_messungen = {
-    "05": 0.1,  
-    "10": 0.5,  
-    "20": 1.0   
-}
+# Konstante Bestrahlungsstärke E [W/m^2] der Lichtquelle während der Messreihe
+# (Bitte bei Bedarf an Ihren echten Photometer-Messwert anpassen)
+E_constant = 1.0  
 
 # ==========================================
 # 2. BILDER EINLESEN & AUSWERTEN
@@ -33,8 +31,14 @@ for zustand in ["hell", "dunkel"]:
         print(f"Ordner nicht gefunden: {zustand_dir}")
         continue
 
-    # Alle Unterordner (Belichtungszeiten) sortiert durchgehen
-    ordner_liste = sorted([d for d in zustand_dir.iterdir() if d.is_dir()])
+    # Ordner automatisch numerisch sortieren (01, 9, 17, 25, ..., 100)
+    try:
+        ordner_liste = sorted(
+            [d for d in zustand_dir.iterdir() if d.is_dir()],
+            key=lambda x: float(x.name.replace("ms", "").replace("_", ".").replace(",", ".").strip())
+        )
+    except ValueError:
+        ordner_liste = sorted([d for d in zustand_dir.iterdir() if d.is_dir()])
 
     for folder in ordner_liste:
         belichtungszeit_name = folder.name
@@ -42,7 +46,7 @@ for zustand in ["hell", "dunkel"]:
         # Bilder laden (mindestens 2 Bilder pro Ordner: A und B)
         bilder = sorted(list(folder.glob("*.png")) + list(folder.glob("*.tif*")) + list(folder.glob("*.raw")))
         if len(bilder) < 2:
-            print(f"Warnung: Weniger als 2 Bilder in {folder.name} gefunden.")
+            print(f"Warnung: Weniger als 2 Bilder in Ordner '{folder.name}' gefunden.")
             continue
             
         # IMREAD_UNCHANGED behält die volle Bittiefe bei
@@ -57,7 +61,7 @@ for zustand in ["hell", "dunkel"]:
         red_A = img_A[0::2, 0::2].astype(np.float64)
         red_B = img_B[0::2, 0::2].astype(np.float64)
 
-        # Mittelwert der Grauwerte (mit ravel() zur Vermeidung von Array-Formfehlern)
+        # Mittelwert der Grauwerte (.ravel() verhindert Array-Formfehler)
         mu_raw = np.mean(np.concatenate([red_A.ravel(), red_B.ravel()]))
         
         # Zeitliche Varianz nach EMVA 1288: sigma^2 = 0.5 * Var(A - B)
@@ -76,11 +80,17 @@ print(f"\nErfolgreich {len(ergebnisse)} Datensätze verarbeitet.")
 # ==========================================
 # 3. DATEN AUFBEREITEN & BERECHNUNGEN
 # ==========================================
-hell_daten = sorted([d for d in ergebnisse if d["zustand"] == "hell"], key=lambda x: x["folder"])
-dunkel_daten = sorted([d for d in ergebnisse if d["zustand"] == "dunkel"], key=lambda x: x["folder"])
+hell_daten = sorted(
+    [d for d in ergebnisse if d["zustand"] == "hell"], 
+    key=lambda x: float(x["folder"].replace("ms", "").replace("_", ".").replace(",", ".").strip())
+)
+dunkel_daten = sorted(
+    [d for d in ergebnisse if d["zustand"] == "dunkel"], 
+    key=lambda x: float(x["folder"].replace("ms", "").replace("_", ".").replace(",", ".").strip())
+)
 
 if len(hell_daten) > 0:
-    # Mittelwert des Dunkelsignals und der Dunkelvarianz
+    # Mittelwert des Dunkelsignals und der Dunkelvarianz über alle Dunkelordner
     mu_dark = np.mean([d["mu"] for d in dunkel_daten])
     sigma_dark_sq = np.mean([d["sigma_sq"] for d in dunkel_daten])
 
@@ -96,25 +106,19 @@ if len(hell_daten) > 0:
         mu_y_list.append(mu_y_cleaned)
         sigma_y_sq_list.append(sigma_y_cleaned_sq)
         
-        # Belichtungszeit basierend auf Ordnernamen zuordnen (05=0.5ms, 10=10ms, 20=20ms)
-        folder_name = h_item["folder"]
-        if folder_name == "05":
-            t_exp_ms = 0.5
-        elif folder_name == "10":
-            t_exp_ms = 10.0
-        elif folder_name == "20":
-            t_exp_ms = 20.0
-        else:
-            clean_name = folder_name.lower().replace("ms", "").replace("_", ".").strip()
+        # --- BELICHTUNGSZEIT AUS ORDNERNAMEN AUSLESEN ---
+        folder_name = h_item["folder"].lower()
+        clean_name = folder_name.replace("ms", "").replace("_", ".").replace(",", ".").strip()
+        
+        try:
             t_exp_ms = float(clean_name)
+        except ValueError:
+            t_exp_ms = 1.0
             
         t_exp = t_exp_ms / 1000.0  # Umrechnung von Millisekunden in Sekunden
         
-        # Bestrahlungsstärke E holen
-        E = E_messungen.get(h_item["folder"], 0.0)
-        
-        # Photonen pro Pixel berechnen
-        mu_p = (A_pixel * E * t_exp) / (h * c / wavelength)
+        # Photonen pro Pixel berechnen (E ist konstant, t_exp steigt von Ordner zu Ordner)
+        mu_p = (A_pixel * E_constant * t_exp) / (h * c / wavelength)
         mu_p_list.append(mu_p)
 
     mu_y = np.array(mu_y_list)
@@ -131,7 +135,6 @@ if len(hell_daten) > 0:
     # Linearen Bereich eingrenzen (< 70% der Sättigung)
     linear_mask = mu_y < (0.7 * sat_grauwert)
     
-    # Fallback, falls Maske durch wenige Testpunkte zu strikt ist
     if not np.any(linear_mask):
         linear_mask = np.ones_like(mu_y, dtype=bool)
 
